@@ -144,13 +144,12 @@ def train_model(model, optimizer, train_dl, epochs=3, train_func=None, test_func
 				model.eval()
 				test_func()
 
-def get_bert_adamw(model, lr=2e-5, decay_factor=0.9, layerwise_lr=0):
+def get_bert_adamw(model, lr=2e-5, weight_decay=0.01, decay_factor=0.9, layerwise_lr=False):
 	no_decay = ['bias', 'LayerNorm.weight']
     #* 对于 no_decay 内的参数, 不进行 weight decay, weight_decay 设置为 0;
 	#* transformers.AdamW 优化器内具有属性 .param_groups, 其对应一个 list, 里面的每个元素都是一组需要优化的参数;
 	#* 每组参数可以独立设置 initial_lr, weight_decay, eps, betas, correct_bias 等优化参数
-	weight_decay = 0.01
-	if layerwise_lr:
+	if layerwise_lr:	#^ 判断是否要对不同 layer 的 parameters 应用不同的 learning rate
 		numLayers = len(model.bert.encoder.layer)
 		optimizer_grouped_parameters = [	# 每个 encoder layer 中的，带有 weight decay 的参数 
 			{'params':[p for n, p in model.named_parameters() if f'encoder.layer.{l}.' in n and (not any(nd in n for nd in no_decay)) and p.requires_grad], 'lr':lr*(decay_factor**(numLayers-1-l)), 
@@ -169,7 +168,7 @@ def get_bert_adamw(model, lr=2e-5, decay_factor=0.9, layerwise_lr=0):
 			'weight_decay': 0.0},
 		]
 		optimzer = AdamW(optimizer_grouped_parameters)
-	else:
+	else:	#^ 所有参数使用相同的 learning rate
 		optimizer_grouped_parameters = [
 			{'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad], 'weight_decay': weight_decay},
 			{'params': [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad], 'weight_decay': 0.0}
@@ -177,13 +176,12 @@ def get_bert_adamw(model, lr=2e-5, decay_factor=0.9, layerwise_lr=0):
 		optimzer = AdamW(optimizer_grouped_parameters, lr=lr)
 	return optimzer
 
-def get_bert_optim_and_sche(model, lr, total_steps, decay_factor=0.9, layerwise_lr=0):
+def get_bert_optim_and_sche(model, lr, total_steps, warmup_ratio=0.1, weight_decay=0.01, layerwise_lr=False, decay_factor=0.9):
 	# optimizer = get_bert_adamw(model, lr=lr)
-	optimizer = get_bert_adamw(model, lr=lr, decay_factor=decay_factor, layerwise_lr=layerwise_lr)
+	optimizer = get_bert_adamw(model, lr=lr, weight_decay=weight_decay, decay_factor=decay_factor, layerwise_lr=layerwise_lr)
 	#* 可以通过 scheduler.get_lr() 获取当前状态下, scheduler 所控制的 optimizer 的 learning rate
 	#* 可以通过 scheduler.state_dict() 获取当前状态下, scheduler 的状态信息 (e.g. base_lrs, _step_count, _last_lr, etc.)
-	# scheduler = get_linear_schedule_with_warmup(optimizer, total_steps//10, total_steps)
-	scheduler = get_linear_schedule_with_warmup(optimizer, total_steps//20, total_steps)
+	scheduler = get_linear_schedule_with_warmup(optimizer, int(total_steps*warmup_ratio), total_steps)
 	return optimizer, scheduler
 
 # 计算 一个 batch 内的 topk 准确率 
