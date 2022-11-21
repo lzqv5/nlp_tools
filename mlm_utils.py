@@ -5,7 +5,7 @@ import torch
 #* 输出一个字典, 其中包含了 input_ids 以及对应的 mlm labels
 #^ 具体可参考 https://huggingface.co/course/chapter7/3?fw=pt
 def group_texts(texts:list, tokenizer=None, chunk_size=512):
-    assert tokenizer != None
+    assert tokenizer != None and tokenizer.is_fast
     CLS = tokenizer.cls_token
     CLS_ID = tokenizer.cls_token_id
     SEP = tokenizer.sep_token
@@ -13,8 +13,8 @@ def group_texts(texts:list, tokenizer=None, chunk_size=512):
     long_text = (SEP+CLS).join(texts)
     # 将所有文本拼接起来，形成用于 mlm 的 corpora
     tokenized_texts = tokenizer([long_text])
-    if tokenizer.is_fast:   # 为每个 text 添加相应的 word_ids, 以标注哪些 tokens 同属一个 word
-        tokenized_texts["word_ids"] = [tokenized_texts.word_ids(i) for i in range(len(tokenized_texts["input_ids"]))]
+    # 为每个 text 添加相应的 word_ids, 以标注哪些 tokens 同属一个 word
+    tokenized_texts["word_ids"] = [tokenized_texts.word_ids(i) for i in range(len(tokenized_texts["input_ids"]))]
     for key,val in tokenized_texts.items():
         # 去除不必要的嵌套索引
         tokenized_texts[key] = val[0]
