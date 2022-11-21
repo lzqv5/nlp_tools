@@ -24,7 +24,7 @@ def getTokenizer(plm='hfl/chinese-roberta-wwm-ext'):
 def getBertModel(plm='hfl/chinese-roberta-wwm-ext'):
     return BertModel.from_pretrained(plm)
 # 获取 mlm 模型
-def getBertModel(plm='hfl/chinese-roberta-wwm-ext'):
+def getBertForMaskedLM(plm='hfl/chinese-roberta-wwm-ext'):
     return BertForMaskedLM.from_pretrained(plm)
 
 def pad_to_fixed_length(x, length, value=0):
