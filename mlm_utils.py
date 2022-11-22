@@ -73,3 +73,38 @@ def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probabili
     chunked_texts["labels"] = new_labels
 
     return chunked_texts
+
+
+#* 假设 input 为已经 MASK 好的文本列表
+#* 输出为 各个 [MASK] 所对应 token 的 top-k predictions
+def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh'):
+    assert type(masked_texts) == list
+    model.eval()
+    inputs = tokenizer(masked_texts, padding="longest", truncation=True, return_tensors="pt")
+    mask = torch.where(inputs["input_ids"]==tokenizer.mask_token_id, True, False)
+    mask_token_probs = F.softmax(model(**inputs).logits[mask])    # mask_token_logits.shape = [#mask_tokens, vocab size]
+    topk_probs, topk_indices = mask_token_probs.topk(k,largest=True)   # topk_indices.shape = [#mask_tokens, k]
+    num_mask_tokens_for_each_text = mask.sum(dim=1) # shape = [#texts]
+    word_predictions = []
+    token_predictions = []
+    prob_predictions = []
+    num_processed_tokens = 0 
+    for idx in range(num_mask_tokens_for_each_text.shape[0]):
+        num = num_mask_tokens_for_each_text[idx]
+        word_prediction = [ [tokenizer.decode(token_id) for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
+        token_prediction = [ [token_id.item() for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
+        prob_prediction = [ [prob.item() for prob in cur_topk_probs] for cur_topk_probs in topk_probs[num_processed_tokens:num_processed_tokens+num] ]
+        word_predictions.append(word_prediction)
+        token_predictions.append(token_prediction)
+        prob_predictions.append(prob_prediction)
+        num_processed_tokens += num
+    inputs["input_ids"][mask] = topk_indices[:,0]
+    new_texts = tokenizer.batch_decode(inputs["input_ids"], skip_special_tokens=True)
+    if language=="zh":  # 去除解码后的中文文本内的多余空格
+        new_texts = [text.replace(" ","") for text in new_texts]
+    return {
+        'words': word_predictions,
+        'tokens': token_predictions,
+        'probs': prob_predictions,
+        'texts':new_texts,   
+    }
