@@ -75,7 +75,7 @@ def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probabili
     return chunked_texts
 
 
-#* 假设 input 为已经 MASK 好的文本列表
+#* input 为已经 MASK 好的文本列表
 #* 输出为 各个 [MASK] 所对应 token 的 top-k predictions
 def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh'):
     assert type(masked_texts) == list
@@ -108,3 +108,25 @@ def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh'):
         'probs': prob_predictions,
         'texts':new_texts,   
     }
+
+#* input 为带有 emojis 的文本列表 (emoji 用 [...] 表示, 中括号[]里的内容代表表情内容, 整个[...]表示一个表情)
+#* 输出为 各个 将各个emoji转换成对应[MAKS]的文本列表
+def convert_emoji_to_mask(texts:list, tokenizer, language='zh'):
+    left_token_id = tokenizer.encode("[", add_special_tokens=False)[0]
+    right_token_id = tokenizer.encode("]", add_special_tokens=False)[0]
+    tokenized_texts_tokenIds = tokenizer(texts, add_special_tokens=False)["input_ids"]
+    MASK_ID = tokenizer.mask_token_id
+    for r,token_ids in enumerate(tokenized_texts_tokenIds):
+        on = False
+        for c, token_id in enumerate(token_ids):
+            if token_id == left_token_id:   # 当前是左括号 [
+                on = True   # 表示当前位置处于括号中间(表情)
+            elif token_id == right_token_id:    # 当前是右括号 ] 
+                on = False  # 表示当前位置处于括号外(非表情)
+            else:   # 当前是其他字符
+                if on:
+                    tokenized_texts_tokenIds[r][c] = MASK_ID
+    new_texts = tokenizer.batch_decode(tokenized_texts_tokenIds)
+    if language=="zh":  # 去除解码后的中文文本内的多余空格
+        new_texts = [text.replace(" ","") for text in new_texts]
+    return new_texts
