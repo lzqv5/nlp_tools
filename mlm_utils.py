@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 #* group_texts 对给定文本 tokenization 并将 token ids 分成多个 chunks
 #* 输入一个文本列表 (a list of strings) 和 一个 tokenizer
@@ -77,36 +78,53 @@ def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probabili
 
 #* input 为已经 MASK 好的文本列表
 #* 输出为 各个 [MASK] 所对应 token 的 top-k predictions
-def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh'):
+def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh', device="cuda"):
     assert type(masked_texts) == list
     model.eval()
-    inputs = tokenizer(masked_texts, padding="longest", truncation=True, return_tensors="pt")
-    mask = torch.where(inputs["input_ids"]==tokenizer.mask_token_id, True, False)
-    mask_token_probs = F.softmax(model(**inputs).logits[mask])    # mask_token_logits.shape = [#mask_tokens, vocab size]
-    topk_probs, topk_indices = mask_token_probs.topk(k,largest=True)   # topk_indices.shape = [#mask_tokens, k]
-    num_mask_tokens_for_each_text = mask.sum(dim=1) # shape = [#texts]
+    model = model.to(device)
+    inputs = tokenizer(masked_texts, padding="longest", max_length=512, truncation=True, return_tensors="pt")
+    total_mask = torch.where(inputs["input_ids"]==tokenizer.mask_token_id, True, False)
+    # process whole data batch by batch
+    dataset = torch.utils.data.TensorDataset(inputs["input_ids"], inputs["attention_mask"], inputs["token_type_ids"], total_mask)
+    sampler = torch.utils.data.SequentialSampler(dataset)
+    params = {"batch_size": 16, "sampler": sampler}
+    dataloader = torch.utils.data.DataLoader(dataset, **params)
     word_predictions = []
     token_predictions = []
     prob_predictions = []
-    num_processed_tokens = 0 
-    for idx in range(num_mask_tokens_for_each_text.shape[0]):
-        num = num_mask_tokens_for_each_text[idx]
-        word_prediction = [ [tokenizer.decode(token_id) for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
-        token_prediction = [ [token_id.item() for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
-        prob_prediction = [ [prob.item() for prob in cur_topk_probs] for cur_topk_probs in topk_probs[num_processed_tokens:num_processed_tokens+num] ]
-        word_predictions.append(word_prediction)
-        token_predictions.append(token_prediction)
-        prob_predictions.append(prob_prediction)
-        num_processed_tokens += num
-    inputs["input_ids"][mask] = topk_indices[:,0]
-    new_texts = tokenizer.batch_decode(inputs["input_ids"], skip_special_tokens=True)
-    if language=="zh":  # 去除解码后的中文文本内的多余空格
-        new_texts = [text.replace(" ","") for text in new_texts]
+    refreshed_texts = []
+    for batch in dataloader:
+        mask = batch[3].to(device=device)
+        batch_input_ids = batch[0].to(device=device)
+        try:
+            mask_token_probs = F.softmax(model(batch_input_ids, batch[1].to(device=device), 
+                                            batch[2].to(device=device)).logits[mask],dim=1)
+        except:
+            print(batch_input_ids.shape)
+            continue
+        topk_probs, topk_indices = mask_token_probs.topk(k,largest=True)   # topk_indices.shape = [#mask_tokens, k]
+        num_mask_tokens_for_each_text = mask.sum(dim=1) # shape = [#texts]
+        num_processed_tokens = 0 
+        for idx in range(num_mask_tokens_for_each_text.shape[0]):
+            num = num_mask_tokens_for_each_text[idx]
+            word_prediction = [ [tokenizer.decode(token_id) for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
+            token_prediction = [ [token_id.item() for token_id in cur_topk_indices] for cur_topk_indices in topk_indices[num_processed_tokens:num_processed_tokens+num] ]
+            prob_prediction = [ [prob.item() for prob in cur_topk_probs] for cur_topk_probs in topk_probs[num_processed_tokens:num_processed_tokens+num] ]
+            word_predictions.append(word_prediction)
+            token_predictions.append(token_prediction)
+            prob_predictions.append(prob_prediction)
+            num_processed_tokens += num
+        batch_input_ids[mask] = topk_indices[:,0]
+        new_texts = tokenizer.batch_decode(batch_input_ids, skip_special_tokens=True)
+        if language=="zh":  # 去除解码后的中文文本内的多余空格
+            new_texts = [text.replace(" ","") for text in new_texts]
+        for new_text in new_texts:
+            refreshed_texts.append(new_text)
     return {
         'words': word_predictions,
         'tokens': token_predictions,
         'probs': prob_predictions,
-        'texts':new_texts,   
+        'texts':refreshed_texts,   
     }
 
 #* input 为带有 emojis 的文本列表 (emoji 用 [...] 表示, 中括号[]里的内容代表表情内容, 整个[...]表示一个表情)
