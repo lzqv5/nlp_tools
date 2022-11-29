@@ -35,11 +35,19 @@ def group_texts_fast(texts:list, tokenizer=None, chunk_size=512):
     # Create a new labels column - 这将作为后续进行 training 的 mini-batch 对应的 labels
     result["labels"] = result["input_ids"].copy()
     return result
+    
+#* 省略了chunk的步骤,直接每一句话当成一个chunk
+#* 输入一个文本列表 (a list of strings) 和 一个 tokenizer, 以及填充的最大长度
+#* 输出一个字典, 其中包含了 input_ids 以及对应的 word_ids (方便后续做 wwm for alphabetics)
+def fast_tokenize_texts_for_alphabetic_wwm(texts:list, tokenizer=None, max_length=512):
+    assert type(texts) == list and tokenizer != None and tokenizer.is_fast
+    tokenized_texts = tokenizer(texts,return_tensors='pt',truncation=True,max_length=max_length, padding='max_length')
+    tokenized_texts["word_ids"] = [tokenized_texts.word_ids(i) for i in range(len(tokenized_texts["input_ids"]))]
+    return tokenized_texts
 
 #* 该 wwm 主要是用于以字母letters为单位的西文做 整词掩蔽
 #* 对于中文这种以 字 为基本单位的语言，需要额外使用 分词工具来完成 wwm
-#* 给定已经分好块的 token ids, 进行 randomly masking.
-#* chunked_texts 为已经分好块的 token ids
+#* 给定已经分好块的 token ids (或者每一行 token ids 都对应一句话, 但每一行都填充到了同样长度), 进行 randomly masking.
 #^ 具体可参考 https://huggingface.co/course/chapter7/3?fw=pt
 def whole_word_masking_alphabetic_data_collator(chunked_texts, mask_token_id, wwm_probability=0.15): 
     word_ids_mat = chunked_texts.pop("word_ids")    # it is a list
