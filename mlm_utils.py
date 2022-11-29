@@ -1,5 +1,8 @@
+import jieba
+import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 #* group_texts 对给定文本 tokenization 并将 token ids 分成多个 chunks
 #* 输入一个文本列表 (a list of strings) 和 一个 tokenizer
@@ -153,6 +156,61 @@ def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh', de
         'probs': prob_predictions,
         'texts':refreshed_texts,   
     }
+
+#^ 参考: https://github.com/ZhuiyiTechnology/GAU-alpha/blob/main/train.py
+#* 输入一个中文文本, 利用分词工具将整个句子其划分为数个词(一个词对应一个或多个字)
+#* 输出是该文本对应的经过 whole word masking 之后的 input_ids, 以及其对应的 labels
+#* -100 代表计算 cross-entropy loss 时，忽略该项
+def wwm_mlm_zh_encode(text, tokenizer, max_length=None, wwm_probability=0.15):
+    assert max_length==None or type(max_length)==int
+    special_tokens = {tokenizer.mask_token, tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token}
+    mask_token_id = tokenizer.mask_token_id
+    words = jieba.lcut(text)
+    rands = np.random.rand(len(words))
+    source, target = [], []
+    for r,w in zip(rands, words):
+        ids = tokenizer.encode(w, add_special_tokens=False)
+        if w in special_tokens: # 说明 text 内部可能包含 special tokens
+            source.extend(ids)  # ids = [special_token_id]
+            target.extend([-100])
+        elif r < wwm_probability*0.8:
+            source.extend([mask_token_id]*len(ids))
+            target.extend(ids)
+        elif r < wwm_probability*0.9:
+            source.extend(ids) 
+            target.extend(ids)
+        elif r < wwm_probability:
+            source.extend(
+                np.random.choice(tokenizer.vocab_size-1, size=len(ids))+1
+            )
+            target.extend(ids)
+        else:
+            source.extend(ids)
+            target.extend([-100]*len(ids))
+    if max_length is None:
+        return [tokenizer.cls_token_id] + source + [tokenizer.sep_token_id],[-100] + target + [-100]
+    else:
+        return [tokenizer.cls_token_id] + source[:max_length-2] + [tokenizer.sep_token_id],\
+                [-100] + target[:max_length-2] + [-100] 
+
+#* 主要针对中文文本做 whole word masking
+#* 输入是中文文本列表 (相当于每个中文文本自己就相当于一个 chunk), 以及相应的 tokenizer, 填充最大长度, 以及掩盖率
+#* 输出是各个中文文本对应的 input_ids, attention_mask 和 labels
+def whole_word_masking_zh(texts:list, tokenizer, max_length=None, wwm_probability=0.15):
+    tokenized_texts = {
+        'input_ids': [0]*len(texts),
+        'labels': [0]*len(texts),
+        # 'attention_mask': [0]*len(texts),
+    }
+    for idx,text in enumerate(texts):
+        source, target = wwm_mlm_zh_encode(text, tokenizer, max_length=max_length, wwm_probability=wwm_probability)
+        tokenized_texts['input_ids'][idx] = torch.tensor(source)
+        tokenized_texts['labels'][idx] = torch.tensor(target)
+    tokenized_texts['input_ids'] = pad_sequence(tokenized_texts['input_ids'], batch_first=True, padding_value=tokenizer.pad_token_id)
+    tokenized_texts['labels'] = pad_sequence(tokenized_texts['labels'], batch_first=True, padding_value=-100)
+    tokenized_texts['attention_mask'] = (tokenized_texts['input_ids'] != tokenizer.pad_token_id).long()
+    return tokenized_texts
+
 
 #* input 为带有 emojis 的文本列表 (emoji 用 [...] 表示, 中括号[]里的内容代表表情内容, 整个[...]表示一个表情)
 #* 输出为 各个 将各个emoji转换成对应[MAKS]的文本列表
