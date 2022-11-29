@@ -5,7 +5,7 @@ import torch.nn.functional as F
 #* 输入一个文本列表 (a list of strings) 和 一个 tokenizer
 #* 输出一个字典, 其中包含了 input_ids 以及对应的 mlm labels
 #^ 具体可参考 https://huggingface.co/course/chapter7/3?fw=pt
-def group_texts(texts:list, tokenizer=None, chunk_size=512):
+def group_texts_fast(texts:list, tokenizer=None, chunk_size=512):
     assert tokenizer != None and tokenizer.is_fast
     CLS = tokenizer.cls_token
     CLS_ID = tokenizer.cls_token_id
@@ -36,11 +36,12 @@ def group_texts(texts:list, tokenizer=None, chunk_size=512):
     result["labels"] = result["input_ids"].copy()
     return result
 
-
+#* 该 wwm 主要是用于以字母letters为单位的西文做 整词掩蔽
+#* 对于中文这种以 字 为基本单位的语言，需要额外使用 分词工具来完成 wwm
 #* 给定已经分好块的 token ids, 进行 randomly masking.
 #* chunked_texts 为已经分好块的 token ids
 #^ 具体可参考 https://huggingface.co/course/chapter7/3?fw=pt
-def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probability=0.15): 
+def whole_word_masking_alphabetic_data_collator(chunked_texts, mask_token_id, wwm_probability=0.15): 
     word_ids_mat = chunked_texts.pop("word_ids")    # it is a list
     chunked_texts = {
         key: torch.tensor(val_list) for key, val_list in chunked_texts.items()
@@ -50,6 +51,7 @@ def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probabili
     binomial_sampler = torch.distributions.binomial.Binomial(total_count = 1,
                             probs = wwm_probability*torch.ones_like(chunked_texts["input_ids"]))
     mask = binomial_sampler.sample().long() # dtype 转换成 Long
+    mask_type = torch.rand(mask.shape)
     labels = chunked_texts["labels"] if "labels" in chunked_texts else chunked_texts["input_ids"].clone()
     new_labels = -100*torch.ones_like(labels)
     rows,cols = chunked_texts["input_ids"].shape
@@ -58,18 +60,35 @@ def whole_word_masking_data_collator(chunked_texts, mask_token_id, wwm_probabili
         for c in range(cols):
             if mask[r,c] == 1:  # masked
                 new_labels[r,c] = labels[r,c]
-                chunked_texts["input_ids"][r,c] = mask_token_id
+                if mask_type[r,c] > 0.9:    # unchange
+                    pass
+                elif mask_type[r,c] < 0.1:  # random id
+                    chunked_texts["input_ids"][r,c] = np.random.choice(vocab_size-1, size=1)[0]+1
+                else:   # mask token
+                    chunked_texts["input_ids"][r,c] = mask_token_id
             elif word_ids_mat[r][c]!=None:   # mask[r,c] == 0 & it is not special token
                 if c>0 and word_ids_mat[r][c]==word_ids_mat[r][c-1]:  # 和前一个 token 同属一个 word
                     if mask[r,c-1] == 1:  # 前一个 token 被 mask 掉了
                         mask[r,c] = 1   # 当前 token 也需要被 mask 掉
+                        mask_type[r,c] = mask_type[r,c-1]
                         new_labels[r,c] = labels[r,c]
-                        chunked_texts["input_ids"][r,c] = mask_token_id
+                        if mask_type[r,c] > 0.9:    # unchange
+                            pass
+                        elif mask_type[r,c] < 0.1:  # random id
+                            chunked_texts["input_ids"][r,c] = np.random.choice(vocab_size-1, size=1)[0]+1
+                        else:   # mask token
+                            chunked_texts["input_ids"][r,c] = mask_token_id
                 elif c==0 and r>0 and word_ids_mat[r][c]==word_ids_mat[r-1][-1]:
                     if mask[r-1,-1] == 1:  # 前一个 token 被 mask 掉了
                         mask[r,c] = 1   # 当前 token 也需要被 mask 掉
+                        mask_type[r,c] = mask_type[r-1,-1]
                         new_labels[r,c] = labels[r,c]
-                        chunked_texts["input_ids"][r,c] = mask_token_id
+                        if mask_type[r,c] > 0.9:    # unchange
+                            pass
+                        elif mask_type[r,c] < 0.1:  # random id
+                            chunked_texts["input_ids"][r,c] = np.random.choice(vocab_size-1, size=1)[0]+1
+                        else:   # mask token
+                            chunked_texts["input_ids"][r,c] = mask_token_id
     # new labels 也可以使用 torch.where(inputs.input_ids == tokenizer.mask_token_id, labels, -100) 来构建
     chunked_texts["labels"] = new_labels
 
