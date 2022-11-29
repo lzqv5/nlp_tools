@@ -48,9 +48,10 @@ def fast_tokenize_texts_for_alphabetic_wwm(texts:list, tokenizer=None, max_lengt
     tokenized_texts["word_ids"] = [tokenized_texts.word_ids(i) for i in range(len(tokenized_texts["input_ids"]))]
     return tokenized_texts
 
-#* 该 wwm 主要是用于以字母letters为单位的西文做 整词掩蔽
+#* 该 wwm 主要是用于以字母letters为单位的西文做 整词掩蔽 
 #* 对于中文这种以 字 为基本单位的语言，需要额外使用 分词工具来完成 wwm
 #* 给定已经分好块的 token ids (或者每一行 token ids 都对应一句话, 但每一行都填充到了同样长度), 进行 randomly masking.
+#* Note: 一个 [MASK] 对应一个 token, i.e. [MASK]不具备拓展性 (e.g. RoBERTa, BERT 这种非生成类的模型) 
 #^ 具体可参考 https://huggingface.co/course/chapter7/3?fw=pt
 def whole_word_masking_alphabetic_data_collator(chunked_texts, mask_token_id, wwm_probability=0.15): 
     word_ids_mat = chunked_texts.pop("word_ids")    # it is a list
@@ -161,6 +162,7 @@ def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh', de
 #* 输入一个中文文本, 利用分词工具将整个句子其划分为数个词(一个词对应一个或多个字)
 #* 输出是该文本对应的经过 whole word masking 之后的 input_ids, 以及其对应的 labels
 #* -100 代表计算 cross-entropy loss 时，忽略该项
+#* Note: 一个 [MASK] 对应一个 token, i.e. [MASK]不具备拓展性 (e.g. RoBERTa, BERT 这种非生成类的模型) 
 def wwm_mlm_zh_encode(text, tokenizer, max_length=None, wwm_probability=0.15):
     assert max_length==None or type(max_length)==int
     special_tokens = {tokenizer.mask_token, tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token}
