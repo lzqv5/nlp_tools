@@ -163,8 +163,8 @@ def mlm_topk_predict(masked_texts:list, tokenizer, model, k=5, language='zh', de
 #* 输出是该文本对应的经过 whole word masking 之后的 input_ids, 以及其对应的 labels
 #* -100 代表计算 cross-entropy loss 时，忽略该项
 #* Note: 一个 [MASK] 对应一个 token, i.e. [MASK]不具备拓展性 (e.g. RoBERTa, BERT 这种非生成类的模型) 
-def wwm_mlm_zh_encode(text, tokenizer, max_length=None, wwm_probability=0.15):
-    assert max_length==None or type(max_length)==int
+def wwm_encode_zh(text, tokenizer, max_length=None, wwm_probability=0.15):
+    assert tokenizer is not None and (max_length==None or type(max_length)==int)
     special_tokens = {tokenizer.mask_token, tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token}
     mask_token_id = tokenizer.mask_token_id
     words = jieba.lcut(text)
@@ -205,12 +205,73 @@ def whole_word_masking_zh(texts:list, tokenizer, max_length=None, wwm_probabilit
         # 'attention_mask': [0]*len(texts),
     }
     for idx,text in enumerate(texts):
-        source, target = wwm_mlm_zh_encode(text, tokenizer, max_length=max_length, wwm_probability=wwm_probability)
+        source, target = wwm_encode_zh(text, tokenizer, max_length=max_length, wwm_probability=wwm_probability)
         tokenized_texts['input_ids'][idx] = torch.tensor(source)
         tokenized_texts['labels'][idx] = torch.tensor(target)
     tokenized_texts['input_ids'] = pad_sequence(tokenized_texts['input_ids'], batch_first=True, padding_value=tokenizer.pad_token_id)
     tokenized_texts['labels'] = pad_sequence(tokenized_texts['labels'], batch_first=True, padding_value=-100)
     tokenized_texts['attention_mask'] = (tokenized_texts['input_ids'] != tokenizer.pad_token_id).long()
+    return tokenized_texts
+
+
+#* 输入一个中文文本, 利用分词工具将整个句子其划分为数个词(一个词对应一个或多个字)
+#* 输出是该文本对应的经过 whole word masking 之后的 input_ids, 以及其对应的由 decoder生成 labels
+#* Note: 一个 [MASK] 可以对应一个或多个 token, i.e. [MASK]具备拓展性 (e.g. BART, T5 这种生成类的模型)
+def wwm_encode_for_seq2seq_zh(text, tokenizer, max_length=None, wwm_probability=0.15):
+    assert tokenizer is not None and (max_length==None or type(max_length)==int)
+    special_tokens = {tokenizer.mask_token, tokenizer.cls_token, tokenizer.sep_token, tokenizer.pad_token}
+    mask_token_id = tokenizer.mask_token_id
+    words = jieba.lcut(text)
+    rands = np.random.rand(len(words))
+    source, target = [], []
+    for r,w in zip(rands, words):
+        ids = tokenizer.encode(w, add_special_tokens=False)
+        if w in special_tokens: # 说明 text 内部可能包含 special tokens
+            source.extend(ids)  # ids = [special_token_id]
+            target.extend(ids)
+        elif r < wwm_probability*0.8:   # 80%的概率将被选中的 word 替换为 [MASK] (单个 [MASK] token)
+            source.extend([mask_token_id])
+            target.extend(ids)
+        elif r < wwm_probability*0.9:   # 10%的概率让被选中的 word 保持不变
+            source.extend(ids) 
+            target.extend(ids)
+        elif r < wwm_probability:   # 10%的概率将被选中的 word 替换为 vocab 中其他随机的 token
+            source.extend(
+                np.random.choice(tokenizer.vocab_size-1, size=len(ids))+1
+            )
+            target.extend(ids)
+        else:   # 对于为选中的词，保持不变; (labels 与 inputs 保持一致)
+            source.extend(ids)
+            target.extend(ids)
+    if max_length is None:
+        return [tokenizer.cls_token_id] + source + [tokenizer.sep_token_id],[tokenizer.cls_token_id] + target + [tokenizer.sep_token_id]
+    else:
+        return [tokenizer.cls_token_id] + source[:max_length-2] + [tokenizer.sep_token_id],\
+                [tokenizer.cls_token_id] + target[:max_length-2] + [tokenizer.sep_token_id]
+
+
+#* 主要针对中文文本做 whole word masking
+#* 输入是中文文本列表 (相当于每个中文文本自己就相当于一个 chunk), 以及相应的 tokenizer, 填充最大长度, 以及掩盖率
+#* 输出是各个中文文本对应的 input_ids, attention_mask , decoder_input_ids, decoder_attention_mask和 labels
+#* 主要用于构造 seq2seq 模型的输入
+def whole_word_masking_for_seq2seq_zh(texts:list, tokenizer, max_length=None, model=None, wwm_probability=0.15):
+    assert tokenizer is not None and model is not None
+    tokenized_texts = {
+        'input_ids': [0]*len(texts),
+        'decoder_input_ids': [0]*len(texts),
+        'labels': [0]*len(texts),
+    }
+    for idx,text in enumerate(texts):
+        source, target = wwm_encode_for_seq2seq_zh(text, tokenizer, max_length=max_length, wwm_probability=wwm_probability)
+        tokenized_texts['input_ids'][idx] = torch.tensor(source)
+        tokenized_texts['labels'][idx] = torch.tensor(target)
+        # tokenized_texts['deocder_input_ids'][idx] = model.prepare_decoder_input_ids_from_labels(labels=tokenized_texts['labels'][idx])
+    tokenized_texts['input_ids'] = pad_sequence(tokenized_texts['input_ids'], batch_first=True, padding_value=tokenizer.pad_token_id)
+    tokenized_texts['labels'] = pad_sequence(tokenized_texts['labels'], batch_first=True, padding_value=tokenizer.pad_token_id)
+    tokenized_texts['decoder_input_ids'] = model.prepare_decoder_input_ids_from_labels(tokenized_texts['labels'])
+    tokenized_texts['attention_mask'] = (tokenized_texts['input_ids'] != tokenizer.pad_token_id).long()
+    tokenized_texts['decoder_attention_mask'] = (tokenized_texts['decoder_input_ids'] != tokenizer.pad_token_id).long()
+    tokenized_texts['labels'].masked_fill_(tokenized_texts['labels']==tokenizer.pad_token_id, -100)
     return tokenized_texts
 
 
