@@ -11,7 +11,6 @@ def simcse_loss(embeds, tau):
     idxs_1 = idxs[None,:]   # 等价于 idxs_1 = idxs.expand((1,-1)), 将 shape 从 [B]=>[1,B]
     idxs_2 = (idxs+1 - idxs % 2 * 2)[:,None]    # [B]=>[B,1]
     labels = (idxs_1.expand((N,N))==idxs_2.expand((N,N))).float()
-    embeds = torch.normal
     embeds = F.normalize(embeds, p=2 ,dim=1)    # L2-normalization
     similarities = torch.matmul(embeds,embeds.T)
     similarities = similarities - torch.eye(N)*1e12
@@ -26,7 +25,7 @@ def simcse_loss(embeds, tau):
 #* freqs 为每个样本对应的 "频率"
 #* tau 为温度系数 temperature
 #* gamma 为调整 weight大小的超参数
-def freq_aware_contrastive_loss(embeds, tau, freqs, gamma = 1.4):
+def freq_aware_contrastive_loss(embeds, tau, freqs, device, gamma = 1.4):
     N, dim = embeds.shape
     idxs = torch.arange(0, N)
     idxs_1 = idxs[None,:]   # 等价于 idxs_1 = idxs.expand((1,-1)), 将 shape 从 [2B]=>[1,2B]
@@ -34,7 +33,7 @@ def freq_aware_contrastive_loss(embeds, tau, freqs, gamma = 1.4):
     labels_bool = (idxs_1.expand((N,N))==idxs_2.expand((N,N)))
     embeds = F.normalize(embeds, p=2 ,dim=1)    # L2-normalization
     similarities = torch.matmul(embeds,embeds.T)    #^ 相似度矩阵 logits
-    similarities = similarities - torch.eye(N)*1e12
+    similarities = similarities - torch.eye(N).to(device)*1e12
     similarities = similarities/tau
     similarities_exp = torch.exp(similarities)
     numerators = similarities_exp[labels_bool]  #^ 根据 mask 取所有正样本pair [2B]
